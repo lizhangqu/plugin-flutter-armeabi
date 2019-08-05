@@ -87,8 +87,8 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
             if (!flutterJar.isFile()) {
                 throw new GradleException('Local engine build does not contain flutter.jar')
             }
-            project.dependencies {
-                addFlutterArmeabiJarApiDependencyForLocalEngine(project, flutterJar)
+            project.android.buildTypes.each {
+                addFlutterApiDependency(project, it, createFlutterArmeabiJarTask(project, it))
             }
         } else {
             Path baseEnginePath = Paths.get(flutterRoot.absolutePath, "bin", "cache", "artifacts", "engine")
@@ -103,22 +103,69 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
             dynamicProfileFlutterJar = baseEnginePath.resolve("android-${targetArch}-dynamic-profile").resolve("flutter.jar").toFile()
             dynamicReleaseFlutterJar = baseEnginePath.resolve("android-${targetArch}-dynamic-release").resolve("flutter.jar").toFile()
             project.android.buildTypes.each {
-                addFlutterArmeabiJarApiDependency(project, it, targetArch)
+                addFlutterApiDependency(project, it, createFlutterArmeabiJarTask(project, it))
             }
             project.android.buildTypes.whenObjectAdded {
-                addFlutterArmeabiJarApiDependency(project, it, targetArch)
+                addFlutterApiDependency(project, it, createFlutterArmeabiJarTask(project, it))
+            }
+        }
+
+        project.afterEvaluate {
+            def variants
+            if (project.android.hasProperty("applicationVariants")) {
+                variants = project.android.applicationVariants
+            } else {
+                variants = project.android.libraryVariants
+            }
+            variants.all { variant ->
+                addFlutterApiDependency(project, variant, createFlutterArmeabiSnapshotsTask(project, variant))
             }
         }
     }
 
+
     /**
-     * create armeabi task
+     * create flutter armeabi jar task
      */
-    private Task createArmeabiTask(Project project, String taskName, File flutterJar, File flutterArmV7Jar) {
+    private Task createFlutterArmeabiSnapshotsTask(Project project, def variant) {
+        def compileFlutterBuildArmTask = project.tasks.findByName("compileflutterBuild${variant.name.capitalize()}Arm")
+        if (compileFlutterBuildArmTask == null) {
+            return null
+        }
+        String taskName = "${flutterBuildPrefix}${variant.name.capitalize()}ArmeabiSnapshots"
+        if (project.tasks.findByName(taskName) != null) {
+            return null
+        }
+        File flutterArmJar = project.file("${project.buildDir}/${AndroidProject.FD_INTERMEDIATES}/flutter/armeabi/${variant.name}/flutter-snapshots.jar")
+
+        def flutterArmeabiSnapshotsTask = project.tasks.create(taskName, Jar) {
+            dependsOn compileFlutterBuildArmTask
+            destinationDir flutterArmJar.parentFile
+            archiveName flutterArmJar.name
+            from(compileFlutterBuildArmTask.intermediateDir) {
+                include '*.so'
+                rename { String filename ->
+                    return "lib/armeabi/lib${filename}"
+                }
+            }
+        }
+        return flutterArmeabiSnapshotsTask
+    }
+
+
+    /**
+     * create flutter armeabi jar task
+     */
+    private Task createFlutterArmeabiJarTask(Project project, def variant) {
+        String taskName = "${flutterBuildPrefix}${variant.name.capitalize()}ArmeabiJar"
+        if (project.tasks.findByName(taskName) != null) {
+            return null
+        }
+        File flutterJar = flutterJarFor(buildModeFor(variant))
+        File flutterArmJar = project.file("${project.buildDir}/${AndroidProject.FD_INTERMEDIATES}/flutter/armeabi/${variant.name}/flutter-armeabi.jar")
         if (flutterJar == null || !flutterJar.exists()) {
             return null
         }
-
         //如果已经包含armeabi，则不创建
         ZipFile zipFile = null
         try {
@@ -133,8 +180,8 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
         }
 
         def flutterArmeabiJarTask = project.tasks.create(taskName, Jar) {
-            destinationDir flutterArmV7Jar.parentFile
-            archiveName flutterArmV7Jar.name
+            destinationDir flutterArmJar.parentFile
+            archiveName flutterArmJar.name
             from(project.zipTree(flutterJar).matching {
                 //仅包含armeabi-v7a的so
                 include "lib/armeabi-v7a/libflutter.so"
@@ -154,71 +201,30 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
     }
 
     /**
-     * add armeabi so for local engine
-     */
-    private void addFlutterArmeabiJarApiDependencyForLocalEngine(Project project, File localFlutterJar) {
-        if (this.flutterJar == null) {
-            return
-        }
-        File flutterJar = localFlutterJar
-        File flutterArmV7Jar = project.file("${project.buildDir}/${com.android.builder.model.AndroidProject.FD_INTERMEDIATES}/flutter/armeabi/flutter-armeabi.jar")
-
-        def flutterArmeabiJarTask = createArmeabiTask(project, "${flutterBuildPrefix}ArmeabiJar", flutterJar, flutterArmV7Jar)
-
-        if (flutterArmeabiJarTask == null) {
-            return
-        }
-
-        Task preBuildTask = project.tasks.findByName("preBuild")
-        if (preBuildTask) {
-            preBuildTask.dependsOn flutterArmeabiJarTask
-        }
-
-        project.dependencies {
-            String configuration;
-            if (project.getConfigurations().findByName("api")) {
-                configuration = "api";
-            } else {
-                configuration = "compile";
-            }
-            add(configuration, project.files {
-                flutterArmeabiJarTask
-            })
-        }
-    }
-
-    /**
      * add armeabi so for prebuilt engine
      */
-    private void addFlutterArmeabiJarApiDependency(Project project, def buildType, String targetArch) {
-        def flutterArmeabiJarTask = null
-        if (targetArch == 'arm') {
-            File flutterJar = flutterJarFor(buildModeFor(buildType))
-            File flutterArmV7Jar = project.file("${project.buildDir}/${AndroidProject.FD_INTERMEDIATES}/flutter/armeabi/${buildType.name}/flutter-armeabi.jar")
-            flutterArmeabiJarTask = createArmeabiTask(project, "${flutterBuildPrefix}${buildType.name.capitalize()}ArmeabiJar", flutterJar, flutterArmV7Jar)
-        }
-        if (flutterArmeabiJarTask == null) {
+    private void addFlutterApiDependency(Project project, def variant, def task) {
+        if (task == null) {
             return
         }
-
-        Task javacTask = project.tasks.findByName("compile${buildType.name.capitalize()}JavaWithJavac")
+        Task javacTask = project.tasks.findByName("compile${variant.name.capitalize()}JavaWithJavac")
         if (javacTask) {
-            javacTask.dependsOn flutterArmeabiJarTask
+            javacTask.dependsOn task
         }
-        Task kotlinTask = project.tasks.findByName("compile${buildType.name.capitalize()}Kotlin")
+        Task kotlinTask = project.tasks.findByName("compile${variant.name.capitalize()}Kotlin")
         if (kotlinTask) {
-            kotlinTask.dependsOn flutterArmeabiJarTask
+            kotlinTask.dependsOn task
         }
 
         project.dependencies {
             String configuration;
             if (project.getConfigurations().findByName("api")) {
-                configuration = buildType.name + "Api";
+                configuration = variant.name + "Api"
             } else {
-                configuration = buildType.name + "Compile";
+                configuration = variant.name + "Compile"
             }
             add(configuration, project.files {
-                flutterArmeabiJarTask
+                task
             })
         }
     }
