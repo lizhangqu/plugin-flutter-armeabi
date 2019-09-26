@@ -7,7 +7,7 @@ buildscript {
         jcenter()
     }
     dependencies {
-        classpath "io.github.lizhangqu:plugin-flutter-armeabi:1.0.1"
+        classpath "io.github.lizhangqu:plugin-flutter-armeabi:1.0.2"
     }
 }
 
