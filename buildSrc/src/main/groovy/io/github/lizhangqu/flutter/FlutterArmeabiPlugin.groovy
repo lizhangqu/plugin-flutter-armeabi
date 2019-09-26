@@ -130,6 +130,10 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
     private Task createFlutterArmeabiSnapshotsTask(Project project, def variant) {
         def compileFlutterBuildArmTask = project.tasks.findByName("compileflutterBuild${variant.name.capitalize()}Arm")
         if (compileFlutterBuildArmTask == null) {
+            //适配驼峰
+            compileFlutterBuildArmTask = project.tasks.findByName("compileFlutterBuild${variant.name.capitalize()}Arm")
+        }
+        if (compileFlutterBuildArmTask == null) {
             return null
         }
         String taskName = "${flutterBuildPrefix}${variant.name.capitalize()}ArmeabiSnapshots"
