@@ -47,6 +47,7 @@ dependencies {
     project.logger.error "buildSrc build.gradle androidGradlePluginVersion ${androidGradlePluginVersion}"
 
     compile "com.android.tools.build:gradle:${androidGradlePluginVersion}"
+    compile 'org.zeroturnaround:zt-zip:1.12'
 }
 
 buildscript {

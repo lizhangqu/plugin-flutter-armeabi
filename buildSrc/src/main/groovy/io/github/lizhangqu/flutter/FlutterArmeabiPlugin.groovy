@@ -1,5 +1,8 @@
 package io.github.lizhangqu.flutter
 
+import org.gradle.api.artifacts.Configuration
+import org.gradle.api.artifacts.Dependency
+
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -130,8 +133,10 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
     private Task createFlutterArmeabiSnapshotsTask(Project project, def variant) {
         def compileFlutterBuildArmTask = project.tasks.findByName("compileflutterBuild${variant.name.capitalize()}Arm")
         if (compileFlutterBuildArmTask == null) {
-            //适配驼峰
             compileFlutterBuildArmTask = project.tasks.findByName("compileFlutterBuild${variant.name.capitalize()}Arm")
+        }
+        if (compileFlutterBuildArmTask == null) {
+            compileFlutterBuildArmTask = project.tasks.findByName("compileFlutterBuild${variant.name.capitalize()}")
         }
         if (compileFlutterBuildArmTask == null) {
             return null
@@ -152,10 +157,16 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
                     return "lib/armeabi/lib${filename}"
                 }
             }
+            //v1.12.13
+            from(new File(compileFlutterBuildArmTask.intermediateDir, "armeabi-v7a")) {
+                include '*.so'
+                rename { String filename ->
+                    return "lib/armeabi/lib${filename}"
+                }
+            }
         }
         return flutterArmeabiSnapshotsTask
     }
-
 
     /**
      * create flutter armeabi jar task
@@ -166,10 +177,75 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
             return null
         }
         File flutterJar = flutterJarFor(buildModeFor(variant))
-        File flutterArmJar = project.file("${project.buildDir}/${AndroidProject.FD_INTERMEDIATES}/flutter/armeabi/${variant.name}/flutter-armeabi.jar")
         if (flutterJar == null || !flutterJar.exists()) {
-            return null
+            //v1.12.13可能不存在这个文件，使用的远程依赖
+            File versionFile = new File(flutterRoot, "version")
+            if (!versionFile.exists()) {
+                return
+            }
+            String flutterVersion = versionFile.text.trim()
+            String[] flutterVersionSpilt = flutterVersion.split("\\.")
+            //>=v1.12.13
+            if (!(flutterVersionSpilt.length > 2 && (flutterVersionSpilt[0].toInteger() > 1 || (flutterVersionSpilt[0].toInteger() <= 1 && flutterVersionSpilt[1].toInteger() >= 12)))) {
+                return
+            }
+            String configuration
+            if (project.getConfigurations().findByName("api")) {
+                configuration = "${variant.name}Api"
+            } else {
+                configuration = "${variant.name}Compile"
+            }
+
+            project.getConfigurations().findByName(configuration)?.copy()?.dependencies?.each { def dependency ->
+                if (dependency.group == "io.flutter" && dependency.name == "armeabi_v7a_${variant.name}") {
+                    String armeabiV7AFlutterSO = "${dependency.group}:${dependency.name}:${dependency.version}"
+                    File mavenFile = getMavenFile(project, armeabiV7AFlutterSO)
+                    if (mavenFile != null && mavenFile.exists()) {
+                        flutterJar = mavenFile
+
+                        //aar中也添加so和jar，如果文件冲突了，请exclude掉flutter的远程依赖
+                        project.afterEvaluate {
+                            project.tasks.findByName("assemble${variant.name.capitalize()}")?.doLast {
+                                File flutterAar = new File(project.buildDir, "outputs/aar/flutter-${variant.name}.aar")
+                                if (!flutterAar.exists()) {
+                                    flutterAar = new File(project.buildDir, "outputs/aar/flutter.aar")
+                                }
+                                if (flutterAar.exists()) {
+                                    boolean shouldAddRemoteDependency = !ZipUtil.containsAnyEntry(flutterAar, [
+                                            "jni/arm64-v8a/libflutter.so",
+                                            "jni/armeabi-v7a/libflutter.so",
+                                            "jni/x86/libflutter.so",
+                                            "jni/x86_64/libflutter.so",
+                                            "lib/arm64-v8a/libflutter.so",
+                                            "lib/armeabi-v7a/libflutter.so",
+                                            "lib/x86/libflutter.so",
+                                            "lib/x86_64/libflutter.so"
+                                    ].toArray(new String[0]))
+                                    //1.12.13 jar包远程依赖
+                                    if (shouldAddRemoteDependency) {
+                                        ZipUtil.addEntry(flutterAar, "libs/flutter_embedding.jar", getMavenFile(project, "${dependency.group}:flutter_embedding_${variant.name}:${dependency.version}"))
+                                        ZipUtil.addEntry(flutterAar, "jni/armeabi-v7a/libflutter.so", ZipUtil.unpackEntry(getMavenFile(project, "${dependency.group}:armeabi_v7a_${variant.name}:${dependency.version}"), "lib/armeabi-v7a/libflutter.so"))
+                                        if (!ZipUtil.containsEntry(flutterAar, "jni/armeabi/libflutter.so")) {
+                                            ZipUtil.addEntry(flutterAar, "jni/armeabi/libflutter.so", ZipUtil.unpackEntry(getMavenFile(project, "${dependency.group}:armeabi_v7a_${variant.name}:${dependency.version}"), "lib/armeabi-v7a/libflutter.so"))
+                                        }
+                                        ZipUtil.addEntry(flutterAar, "jni/arm64-v8a/libflutter.so", ZipUtil.unpackEntry(getMavenFile(project, "${dependency.group}:arm64_v8a_${variant.name}:${dependency.version}"), "lib/arm64-v8a/libflutter.so"))
+                                        if (variant.name.contains("debug")) {
+                                            ZipUtil.addEntry(flutterAar, "jni/x86/libflutter.so", ZipUtil.unpackEntry(getMavenFile(project, "${dependency.group}:x86_${variant.name}:${dependency.version}"), "lib/x86/libflutter.so"))
+                                            ZipUtil.addEntry(flutterAar, "jni/x86_64/libflutter.so", ZipUtil.unpackEntry(getMavenFile(project, "${dependency.group}:x86_64_${variant.name}:${dependency.version}"), "lib/x86_64/libflutter.so"))
+                                        }
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+        if (flutterJar == null || !flutterJar.exists()) {
+            return
+        }
+
         //如果已经包含armeabi，则不创建
         ZipFile zipFile = null
         try {
@@ -183,6 +259,7 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
             }
         }
 
+        File flutterArmJar = project.file("${project.buildDir}/${AndroidProject.FD_INTERMEDIATES}/flutter/armeabi/${variant.name}/flutter-armeabi.jar")
         def flutterArmeabiJarTask = project.tasks.create(taskName, Jar) {
             destinationDir flutterArmJar.parentFile
             archiveName flutterArmJar.name
@@ -270,5 +347,24 @@ class FlutterArmeabiPlugin implements Plugin<Project> {
             return debugFlutterJar
         }
         return releaseFlutterJar
+    }
+
+
+    /**
+     * get maven file
+     */
+    private static File getMavenFile(Project project, def maven) {
+        Dependency dependency = project.getDependencies().create(maven)
+        try {
+            dependency.setChanging(true)
+        } catch (Exception e) {
+            e.printStackTrace()
+        }
+        Configuration configuration = project.getConfigurations().detachedConfiguration(dependency)
+        configuration.setTransitive(false)
+        configuration.resolutionStrategy.cacheDynamicVersionsFor(5, 'minutes')
+        configuration.resolutionStrategy.cacheChangingModulesFor(0, 'seconds')
+        File file = configuration.getSingleFile()
+        return file
     }
 }
